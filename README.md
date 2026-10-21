@@ -34,7 +34,11 @@ writescope --path /mnt/data self-test
 
 它会依次实际执行 `seq`、`seq --direct --preallocate --sync write`、`rand --threads 4`、`rand --prefill --direct`、`files --threads 4`、`files --sync fs`、`--keep` 清理检查，并校验每次结果的 logical 字节、active+settle、timeline 总和、块写入计数、WAF 有效性及运行目录清理。输出逐项 `PASS`/`FAIL`，任何一项失败时退出码为 1。
 
-自检的 baseline/settle 取 `min(用户值, 100ms)` 以缩短耗时，且始终清理运行目录（忽略 `--keep`）；目标目录需约 100 MiB 可用空间，实际耗时取决于磁盘（本项目测试机 ext4 HDD 约 1–2 分钟，btrfs SSD 约 5 秒）。`--json` 输出结构化结果：
+自检的 baseline/settle 取 `min(用户值, 100ms)` 以缩短耗时，且始终清理运行目录（忽略 `--keep`）；目标目录需约 100 MiB 可用空间，实际耗时取决于磁盘（本项目测试机 ext4 HDD 约 1–2 分钟，btrfs SSD 约 5 秒）。
+
+自检输出中的 WAF 只用于诊断，不能作为基准：用例参数固定且数据量小，窗口被压到 100ms，用例连续执行时上一项的删除/事务提交可能串到下一项。它验证的是“工具在这台机器、这个文件系统上能否正确工作”；要测 WAF，请用 `bench` 或 `seq`/`rand`/`files` 单条命令，在空闲系统上放大数据量并重复测量。
+
+`--json` 输出结构化结果：
 
 ```json
 {
@@ -49,6 +53,22 @@ writescope --path /mnt/data self-test
   "failed": 0
 }
 ```
+
+## 基准测量
+
+一条命令跑三组固定形状的基准，每组默认重复 3 次并取中位数：
+
+```bash
+writescope --path /mnt/data bench
+```
+
+- `seq`：1 GiB，1 MiB 块，单线程，`--sync file`；
+- `rand`：256 MiB 文件，4 KiB 块，4 线程，先 prefill 再覆写，`--sync file`；
+- `files`：2000 × 4 KiB，4 线程，每文件 `fsync`，`--sync file`。
+
+用 `--seq-size`、`--rand-size`、`--files-count`、`--repeats` 调整规模；机械盘建议降低随机和小文件规模。`bench` 将 baseline 至少设为 1s、settle 至少 2s（btrfs 为 5s），并在每轮之间对目标文件系统执行 `syncfs`，避免上一轮删除和元数据提交串入下一轮；它忽略 `--keep`，始终清理运行目录。`--json` 输出包含每轮原始报告的结构化结果。
+
+WAF 依赖负载形状，`bench` 报告三组独立结果，不合成单一分数；比较时应保持参数、文件系统与空闲状态一致。
 
 开发期可用 `just verify`（fmt/clippy + 单元测试 + 自检）或 `just smoke`（仅自检）：
 
@@ -86,10 +106,12 @@ chmod +x writescope-linux-x86_64
 writescope [GLOBAL OPTIONS] <COMMAND>
 
 Commands:
-  seq    Sequential write of one file
-  rand   Random-order write of every block in one file, exactly once
-  files  Create and write many small files
-  info   Resolve target filesystem/device and show current counters
+  seq       Sequential write of one file
+  rand      Random-order write of every block in one file, exactly once
+  files     Create and write many small files
+  info      Resolve target filesystem/device and show current counters
+  selftest  Run a built-in end-to-end self-test of every write workload
+  bench     Benchmark sequential, random, and small-file workloads
 
 Global options:
   -p, --path <DIR>                 Target directory [default: .]

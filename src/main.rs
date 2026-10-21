@@ -1,3 +1,4 @@
+mod bench;
 mod cli;
 mod device;
 mod diskstats;

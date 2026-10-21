@@ -73,6 +73,9 @@ pub enum Command {
     /// Run a built-in end-to-end self-test of every write workload
     #[command(alias = "self-test")]
     Selftest,
+    /// Benchmark sequential, random, and small-file workloads
+    #[command(alias = "benchmark")]
+    Bench(BenchArgs),
 }
 
 #[derive(Debug, Args)]
@@ -147,6 +150,22 @@ pub struct FilesArgs {
     pub threads: usize,
 }
 
+#[derive(Debug, Args)]
+pub struct BenchArgs {
+    /// Sequential workload size per run
+    #[arg(long, default_value = "1GiB", value_parser = parse_size_arg)]
+    pub seq_size: u64,
+    /// Random workload file size per run
+    #[arg(long, default_value = "256MiB", value_parser = parse_size_arg)]
+    pub rand_size: u64,
+    /// Number of small files per run
+    #[arg(long, default_value_t = 2_000)]
+    pub files_count: u64,
+    /// Runs per workload; the median is reported
+    #[arg(long, default_value_t = 3)]
+    pub repeats: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SyncMode {
     File,
@@ -179,7 +198,7 @@ impl Pattern {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Workload {
     Seq {
         size: u64,
@@ -242,10 +261,19 @@ pub struct GlobalOpts {
 }
 
 #[derive(Debug)]
+pub struct BenchPlan {
+    pub seq: Workload,
+    pub rand: Workload,
+    pub files: Workload,
+    pub repeats: u32,
+}
+
+#[derive(Debug)]
 pub enum Action {
     Info,
     Measure(Workload),
     Selftest,
+    Bench(BenchPlan),
 }
 
 #[derive(Debug)]
@@ -274,6 +302,7 @@ pub fn validate(cli: Cli) -> Result<Validated> {
         Command::Rand(args) => Action::Measure(validate_rand(args)?),
         Command::Files(args) => Action::Measure(validate_files(args)?),
         Command::Selftest => Action::Selftest,
+        Command::Bench(args) => Action::Bench(validate_bench(args)?),
     };
 
     let opts = GlobalOpts {
@@ -391,6 +420,53 @@ fn validate_files(args: FilesArgs) -> Result<Workload> {
         sync: args.sync,
         pattern: args.pattern,
         threads: args.threads,
+    })
+}
+
+fn validate_bench(args: BenchArgs) -> Result<BenchPlan> {
+    const SEQ_BLOCK: u64 = 1024 * 1024;
+    const BLOCK: u64 = 4096;
+    const THREADS: usize = 4;
+
+    if !(1..=9).contains(&args.repeats) {
+        bail!("--repeats must be between 1 and 9");
+    }
+
+    let rand_threads = (args.rand_size / BLOCK).clamp(1, THREADS as u64) as usize;
+    let files_threads = args.files_count.clamp(1, THREADS as u64) as usize;
+
+    let seq = validate_seq(SeqArgs {
+        size: args.seq_size,
+        block_size: SEQ_BLOCK,
+        sync: SyncMode::File,
+        direct: false,
+        preallocate: false,
+        pattern: Pattern::Random,
+        threads: 1,
+    })?;
+    let rand = validate_rand(RandArgs {
+        file_size: args.rand_size,
+        block_size: BLOCK,
+        sync: SyncMode::File,
+        prefill: true,
+        direct: false,
+        pattern: Pattern::Random,
+        threads: rand_threads,
+        seed: 42,
+    })?;
+    let files = validate_files(FilesArgs {
+        count: args.files_count,
+        file_size: BLOCK,
+        sync: SyncMode::File,
+        pattern: Pattern::Random,
+        threads: files_threads,
+    })?;
+
+    Ok(BenchPlan {
+        seq,
+        rand,
+        files,
+        repeats: args.repeats,
     })
 }
 

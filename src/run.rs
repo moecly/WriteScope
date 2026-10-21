@@ -1,3 +1,4 @@
+use crate::bench;
 use crate::cli::{self, GlobalOpts, SyncMode, Workload};
 use crate::device::{self, DeviceInfo, Target};
 use crate::diskstats::{self, Counters};
@@ -28,6 +29,7 @@ pub fn dispatch(cli: cli::Cli) -> Result<()> {
         cli::Action::Measure(workload) => measure(opts, workload),
         cli::Action::Info => info(&opts),
         cli::Action::Selftest => selftest::run(&opts),
+        cli::Action::Bench(plan) => bench::run(&opts, plan),
     }
 }
 
